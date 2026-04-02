@@ -1,0 +1,29 @@
+{
+    "name": "samuelmauli/ebanx-api",
+    "description": "EBANX Take-Home API - Banking operations with in-memory storage",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "slim/slim": "^4.14",
+        "slim/psr7": "^1.7",
+        "slim/http": "^1.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Ebanx\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Ebanx\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}
