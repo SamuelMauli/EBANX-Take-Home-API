@@ -12,12 +12,16 @@ use Ebanx\Domain\AccountRepositoryInterface;
  * Stores accounts as JSON in a temp file — persists between requests,
  * lost on server restart (which matches "durability is NOT a requirement").
  *
- * Uses flock() for full read-modify-write atomicity under concurrent PHP-FPM workers.
+ * Uses flock() for full read-modify-write atomicity across concurrent PHP-FPM workers.
+ * Re-entrant locking allows atomic() blocks to call find()/save() without deadlocking.
  */
 final class FileAccountRepository implements AccountRepositoryInterface
 {
     private string $filePath;
     private string $lockPath;
+    private int $lockDepth = 0;
+    /** @var resource|null */
+    private $activeLockHandle = null;
 
     public function __construct(?string $filePath = null)
     {
@@ -57,7 +61,8 @@ final class FileAccountRepository implements AccountRepositoryInterface
 
     /**
      * Execute a callback under an exclusive file lock.
-     * Guarantees read-modify-write atomicity across PHP-FPM workers.
+     * Re-entrant: if already inside a lock, the callback runs directly
+     * without attempting to acquire again (prevents deadlock).
      *
      * @template T
      * @param callable(): T $callback
@@ -65,6 +70,11 @@ final class FileAccountRepository implements AccountRepositoryInterface
      */
     private function withLock(callable $callback): mixed
     {
+        // Already inside a lock — skip re-acquisition to prevent deadlock
+        if ($this->lockDepth > 0) {
+            return $callback();
+        }
+
         $dir = dirname($this->lockPath);
         if (!is_dir($dir)) {
             mkdir($dir, 0755, true);
@@ -74,6 +84,9 @@ final class FileAccountRepository implements AccountRepositoryInterface
         if ($lockHandle === false) {
             throw new \RuntimeException('Cannot open lock file: ' . $this->lockPath);
         }
+
+        $this->lockDepth++;
+        $this->activeLockHandle = $lockHandle;
 
         try {
             if (!flock($lockHandle, LOCK_EX)) {
@@ -86,6 +99,8 @@ final class FileAccountRepository implements AccountRepositoryInterface
 
             return $result;
         } finally {
+            $this->lockDepth--;
+            $this->activeLockHandle = null;
             fclose($lockHandle);
         }
     }
