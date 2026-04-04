@@ -15,6 +15,10 @@ final class Account
         private readonly string $id,
         int $balance = 0,
     ) {
+        if (trim($id) === '') {
+            throw new \InvalidArgumentException('Account ID cannot be empty');
+        }
+
         $this->balance = $balance;
     }
 

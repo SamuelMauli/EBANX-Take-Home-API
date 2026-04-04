@@ -48,11 +48,8 @@ final class RateLimitMiddleware implements MiddlewareInterface
 
     private function getClientIp(Request $request): string
     {
-        $forwarded = $request->getHeaderLine('X-Forwarded-For');
-        if ($forwarded !== '') {
-            return trim(explode(',', $forwarded)[0]);
-        }
-
+        // Only trust REMOTE_ADDR — X-Forwarded-For is client-spoofable
+        // and would allow attackers to bypass rate limiting entirely
         return $request->getServerParams()['REMOTE_ADDR'] ?? '127.0.0.1';
     }
 

@@ -12,4 +12,9 @@ final class InvalidAmountException extends DomainException
             sprintf('Amount must be positive, got: %d', $amount)
         );
     }
+
+    public static function selfTransfer(): self
+    {
+        return new self('Cannot transfer to the same account');
+    }
 }

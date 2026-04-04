@@ -31,10 +31,21 @@ final class InputValidationMiddleware implements MiddlewareInterface
             if (is_array($body) && !empty($body)) {
                 $sanitized = array_intersect_key($body, array_flip(self::ALLOWED_FIELDS));
 
-                // Validate amount is numeric and within safe bounds
+                // Trim account IDs to prevent " 100 " vs "100" inconsistency
+                foreach (['origin', 'destination'] as $field) {
+                    if (isset($sanitized[$field])) {
+                        $sanitized[$field] = trim((string) $sanitized[$field]);
+                    }
+                }
+
+                // Validate amount is numeric, integer, and within safe bounds
                 if (isset($sanitized['amount'])) {
                     if (!is_numeric($sanitized['amount'])) {
                         return $this->badRequest('Amount must be numeric');
+                    }
+
+                    if (is_float($sanitized['amount'])) {
+                        return $this->badRequest('Amount must be a whole number');
                     }
 
                     $amount = (int) $sanitized['amount'];
@@ -45,9 +56,33 @@ final class InputValidationMiddleware implements MiddlewareInterface
                     $sanitized['amount'] = $amount;
                 }
 
-                // Validate account IDs are non-empty when present
+                // Validate required fields based on event type
+                if (isset($sanitized['type'])) {
+                    $requiredFields = match ($sanitized['type']) {
+                        'deposit' => ['destination', 'amount'],
+                        'withdraw' => ['origin', 'amount'],
+                        'transfer' => ['origin', 'destination', 'amount'],
+                        default => [],
+                    };
+
+                    foreach ($requiredFields as $field) {
+                        if (!isset($sanitized[$field])) {
+                            return $this->badRequest(sprintf('Missing required field: %s', $field));
+                        }
+                    }
+
+                    // Self-transfer check
+                    if ($sanitized['type'] === 'transfer'
+                        && isset($sanitized['origin'], $sanitized['destination'])
+                        && (string) $sanitized['origin'] === (string) $sanitized['destination']
+                    ) {
+                        return $this->badRequest('Origin and destination must be different');
+                    }
+                }
+
+                // Validate account IDs are non-empty (already trimmed above)
                 foreach (['origin', 'destination'] as $field) {
-                    if (isset($sanitized[$field]) && trim((string) $sanitized[$field]) === '') {
+                    if (isset($sanitized[$field]) && $sanitized[$field] === '') {
                         return $this->badRequest(sprintf('%s cannot be empty', ucfirst($field)));
                     }
                 }

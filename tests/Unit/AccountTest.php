@@ -116,6 +116,22 @@ final class AccountTest extends TestCase
     }
 
     #[Test]
+    public function empty_id_throws_invalid_argument(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        new Account('');
+    }
+
+    #[Test]
+    public function blank_id_throws_invalid_argument(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        new Account('   ');
+    }
+
+    #[Test]
     public function multiple_operations_maintain_correct_balance(): void
     {
         $account = new Account('100');

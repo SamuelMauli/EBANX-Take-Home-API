@@ -300,6 +300,145 @@ final class ApiTest extends TestCase
         $this->assertSame(400, $response->getStatusCode());
     }
 
+    #[Test]
+    public function deposit_without_destination_returns_400(): void
+    {
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'amount' => 10,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function withdraw_without_origin_returns_400(): void
+    {
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'withdraw', 'amount' => 10,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function transfer_without_destination_returns_400(): void
+    {
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'transfer', 'origin' => '100', 'amount' => 10,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function transfer_without_amount_returns_400(): void
+    {
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'transfer', 'origin' => '100', 'destination' => '200',
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function self_transfer_returns_400(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 50,
+        ]));
+
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'transfer', 'origin' => '100', 'destination' => '100', 'amount' => 10,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function self_transfer_does_not_alter_balance(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 50,
+        ]));
+
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'transfer', 'origin' => '100', 'destination' => '100', 'amount' => 10,
+        ]));
+
+        $request = $this->createGetRequest('/balance', ['account_id' => '100']);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('50', (string) $response->getBody());
+    }
+
+    #[Test]
+    public function float_amount_returns_400(): void
+    {
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10.5,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function balance_without_account_id_returns_400(): void
+    {
+        $request = $this->createGetRequest('/balance');
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function balance_with_empty_account_id_returns_400(): void
+    {
+        $request = $this->createGetRequest('/balance', ['account_id' => '']);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function trimmed_account_id_matches_original(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 30,
+        ]));
+
+        // Deposit with spaces around ID should credit the same account
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => ' 100 ', 'amount' => 20,
+        ]));
+
+        $request = $this->createGetRequest('/balance', ['account_id' => '100']);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('50', (string) $response->getBody());
+    }
+
+    #[Test]
+    public function whitespace_only_destination_returns_400(): void
+    {
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '   ', 'amount' => 10,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+    }
+
     private function createGetRequest(string $uri, array $queryParams = []): \Psr\Http\Message\ServerRequestInterface
     {
         if (!empty($queryParams)) {

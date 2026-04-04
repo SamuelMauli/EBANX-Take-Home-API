@@ -26,9 +26,13 @@ final class AccountController
 
     public function balance(Request $request, Response $response): Response
     {
-        $accountId = $request->getQueryParams()['account_id'] ?? '';
+        $accountId = trim($request->getQueryParams()['account_id'] ?? '');
 
-        $balance = $this->service->getBalance((string) $accountId);
+        if ($accountId === '') {
+            return ResponseFactory::plain($response, '0', 400);
+        }
+
+        $balance = $this->service->getBalance($accountId);
 
         return ResponseFactory::plain($response, (string) $balance);
     }

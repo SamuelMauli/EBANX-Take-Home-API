@@ -7,6 +7,7 @@ namespace Ebanx\Tests\Unit;
 use Ebanx\Domain\Account;
 use Ebanx\Domain\AccountService;
 use Ebanx\Domain\Exception\AccountNotFoundException;
+use Ebanx\Domain\Exception\InvalidAmountException;
 use Ebanx\Infrastructure\InMemoryAccountRepository;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -222,6 +223,29 @@ final class AccountServiceTest extends TestCase
 
         $this->assertSame(10, $this->repository->find('100')->getBalance());
         $this->assertSame(20, $this->repository->find('200')->getBalance());
+    }
+
+    #[Test]
+    public function self_transfer_throws_and_preserves_balance(): void
+    {
+        $this->service->deposit('100', 50);
+
+        $this->expectException(InvalidAmountException::class);
+
+        $this->service->transfer('100', '100', 10);
+    }
+
+    #[Test]
+    public function self_transfer_does_not_alter_state(): void
+    {
+        $this->service->deposit('100', 50);
+
+        try {
+            $this->service->transfer('100', '100', 10);
+        } catch (InvalidAmountException) {
+        }
+
+        $this->assertSame(50, $this->repository->find('100')->getBalance());
     }
 
     #[Test]

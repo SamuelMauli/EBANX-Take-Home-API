@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ebanx\Domain;
 
 use Ebanx\Domain\Exception\AccountNotFoundException;
+use Ebanx\Domain\Exception\InvalidAmountException;
 
 final class AccountService
 {
@@ -53,6 +54,10 @@ final class AccountService
      */
     public function transfer(string $origin, string $destination, int $amount): array
     {
+        if ($origin === $destination) {
+            throw InvalidAmountException::selfTransfer();
+        }
+
         $originAccount = $this->repository->find($origin);
 
         if ($originAccount === null) {
