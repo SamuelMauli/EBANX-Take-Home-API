@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ebanx\Http\Middleware;
 
+use Ebanx\Http\ResponseFactory;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Server\MiddlewareInterface;
@@ -21,10 +22,12 @@ final class InputValidationMiddleware implements MiddlewareInterface
         if ($request->getMethod() === 'POST') {
             $bodySize = $request->getBody()->getSize();
             if ($bodySize !== null && $bodySize > self::MAX_PAYLOAD_BYTES) {
-                $response = new SlimResponse();
-                $response->getBody()->write('Payload too large');
-
-                return $response->withStatus(413);
+                return ResponseFactory::error(
+                    new SlimResponse(),
+                    'PAYLOAD_TOO_LARGE',
+                    'Payload too large',
+                    413,
+                );
             }
 
             $body = $request->getParsedBody();
@@ -96,9 +99,11 @@ final class InputValidationMiddleware implements MiddlewareInterface
 
     private function badRequest(string $message): Response
     {
-        $response = new SlimResponse();
-        $response->getBody()->write($message);
-
-        return $response->withStatus(400);
+        return ResponseFactory::error(
+            new SlimResponse(),
+            'VALIDATION_ERROR',
+            $message,
+            400,
+        );
     }
 }

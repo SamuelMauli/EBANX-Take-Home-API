@@ -27,4 +27,14 @@ final class ResponseFactory
             ->withHeader('Content-Type', 'text/plain')
             ->withStatus($status);
     }
+
+    public static function error(Response $response, string $code, string $message, int $status): Response
+    {
+        return self::json($response, [
+            'error' => [
+                'code' => $code,
+                'message' => $message,
+            ],
+        ], $status);
+    }
 }

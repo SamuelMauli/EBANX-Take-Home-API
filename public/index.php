@@ -11,6 +11,7 @@ use Ebanx\Http\Middleware\ErrorHandlerMiddleware;
 use Ebanx\Http\Middleware\IdempotencyMiddleware;
 use Ebanx\Http\Middleware\InputValidationMiddleware;
 use Ebanx\Http\Middleware\RateLimitMiddleware;
+use Ebanx\Http\Middleware\RequestIdMiddleware;
 use Ebanx\Http\Middleware\SecurityHeadersMiddleware;
 use Ebanx\Infrastructure\FileAccountRepository;
 use Ebanx\Infrastructure\IdempotencyStore;
@@ -33,6 +34,7 @@ $app->add(new ErrorHandlerMiddleware());
 $app->add(new RateLimitMiddleware());
 $app->add(new CorsMiddleware());
 $app->add(new SecurityHeadersMiddleware());
+$app->add(new RequestIdMiddleware());
 $app->addRoutingMiddleware();
 
 // Routes

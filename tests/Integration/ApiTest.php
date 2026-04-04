@@ -10,6 +10,7 @@ use Ebanx\Http\Middleware\CorsMiddleware;
 use Ebanx\Http\Middleware\ErrorHandlerMiddleware;
 use Ebanx\Http\Middleware\IdempotencyMiddleware;
 use Ebanx\Http\Middleware\InputValidationMiddleware;
+use Ebanx\Http\Middleware\RequestIdMiddleware;
 use Ebanx\Http\Middleware\SecurityHeadersMiddleware;
 use Ebanx\Infrastructure\IdempotencyStore;
 use Ebanx\Infrastructure\InMemoryAccountRepository;
@@ -40,6 +41,7 @@ final class ApiTest extends TestCase
         $this->app->add(new ErrorHandlerMiddleware());
         $this->app->add(new CorsMiddleware());
         $this->app->add(new SecurityHeadersMiddleware());
+        $this->app->add(new RequestIdMiddleware());
 
         $this->app->post('/reset', [$controller, 'reset']);
         $this->app->get('/balance', [$controller, 'balance']);
@@ -596,6 +598,82 @@ final class ApiTest extends TestCase
         $this->assertSame(70, $transferLog['origin_balance_after']);
         $this->assertSame(0, $transferLog['destination_balance_before']);
         $this->assertSame(30, $transferLog['destination_balance_after']);
+    }
+
+    // --- Request ID ---
+
+    #[Test]
+    public function response_contains_request_id_header(): void
+    {
+        $request = $this->createPostRequest('/reset');
+        $response = $this->app->handle($request);
+
+        $requestId = $response->getHeaderLine('X-Request-ID');
+        $this->assertNotEmpty($requestId);
+        // UUID v4 format
+        $this->assertMatchesRegularExpression(
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/',
+            $requestId,
+        );
+    }
+
+    #[Test]
+    public function client_request_id_is_echoed_back(): void
+    {
+        $request = $this->createPostRequest('/reset')
+            ->withHeader('X-Request-ID', 'my-trace-id-123');
+        $response = $this->app->handle($request);
+
+        $this->assertSame('my-trace-id-123', $response->getHeaderLine('X-Request-ID'));
+    }
+
+    // --- Structured error responses ---
+
+    #[Test]
+    public function validation_error_returns_structured_json(): void
+    {
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10.5,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $body = json_decode((string) $response->getBody(), true);
+        $this->assertSame('VALIDATION_ERROR', $body['error']['code']);
+        $this->assertSame('Amount must be a whole number', $body['error']['message']);
+    }
+
+    #[Test]
+    public function domain_error_returns_structured_json(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10,
+        ]));
+
+        // Negative amount passes middleware but caught by domain
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'withdraw', 'origin' => '100', 'amount' => -5,
+        ]);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $body = json_decode((string) $response->getBody(), true);
+        $this->assertSame('INVALID_AMOUNT', $body['error']['code']);
+    }
+
+    #[Test]
+    public function not_found_errors_keep_ebanx_spec_format(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+
+        // 404 errors must stay as plain "0" per EBANX spec
+        $request = $this->createGetRequest('/balance', ['account_id' => '999']);
+        $response = $this->app->handle($request);
+
+        $this->assertSame(404, $response->getStatusCode());
+        $this->assertSame('0', (string) $response->getBody());
+        $this->assertSame('text/plain', $response->getHeaderLine('Content-Type'));
     }
 
     private function createGetRequest(string $uri, array $queryParams = []): \Psr\Http\Message\ServerRequestInterface

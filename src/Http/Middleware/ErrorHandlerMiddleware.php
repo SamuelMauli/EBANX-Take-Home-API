@@ -22,9 +22,22 @@ final class ErrorHandlerMiddleware implements MiddlewareInterface
         try {
             return $handler->handle($request);
         } catch (AccountNotFoundException | InsufficientFundsException) {
+            // EBANX spec: 404 with plain "0"
             return ResponseFactory::plain(new SlimResponse(), '0', 404);
-        } catch (InvalidAmountException | InvalidEventTypeException $e) {
-            return ResponseFactory::plain(new SlimResponse(), $e->getMessage(), 400);
+        } catch (InvalidAmountException $e) {
+            return ResponseFactory::error(
+                new SlimResponse(),
+                'INVALID_AMOUNT',
+                $e->getMessage(),
+                400,
+            );
+        } catch (InvalidEventTypeException $e) {
+            return ResponseFactory::error(
+                new SlimResponse(),
+                'INVALID_EVENT_TYPE',
+                $e->getMessage(),
+                400,
+            );
         } catch (\Throwable $e) {
             error_log(sprintf(
                 '[EBANX-API] Unhandled exception: %s in %s:%d',
@@ -33,8 +46,9 @@ final class ErrorHandlerMiddleware implements MiddlewareInterface
                 $e->getLine(),
             ));
 
-            return ResponseFactory::plain(
+            return ResponseFactory::error(
                 new SlimResponse(),
+                'INTERNAL_ERROR',
                 'Internal Server Error',
                 500,
             );
