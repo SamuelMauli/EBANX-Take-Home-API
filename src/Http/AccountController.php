@@ -7,6 +7,7 @@ namespace Ebanx\Http;
 use Ebanx\Domain\AccountService;
 use Ebanx\Domain\Exception\InvalidEventTypeException;
 use Ebanx\Http\Response\EventResponse;
+use Ebanx\Infrastructure\IdempotencyStore;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
@@ -14,12 +15,14 @@ final class AccountController
 {
     public function __construct(
         private readonly AccountService $service,
+        private readonly ?IdempotencyStore $idempotencyStore = null,
     ) {
     }
 
     public function reset(Request $request, Response $response): Response
     {
         $this->service->reset();
+        $this->idempotencyStore?->clear();
 
         return ResponseFactory::plain($response, 'OK');
     }
@@ -48,6 +51,15 @@ final class AccountController
             'transfer' => $this->handleTransfer($body, $response),
             default => throw InvalidEventTypeException::unknown($type),
         };
+    }
+
+    public function health(Request $request, Response $response): Response
+    {
+        return ResponseFactory::json($response, [
+            'status' => 'healthy',
+            'timestamp' => date('c'),
+            'php_version' => PHP_VERSION,
+        ]);
     }
 
     private function handleDeposit(array $body, Response $response): Response

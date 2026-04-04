@@ -8,9 +8,12 @@ use Ebanx\Domain\AccountService;
 use Ebanx\Http\AccountController;
 use Ebanx\Http\Middleware\CorsMiddleware;
 use Ebanx\Http\Middleware\ErrorHandlerMiddleware;
+use Ebanx\Http\Middleware\IdempotencyMiddleware;
 use Ebanx\Http\Middleware\InputValidationMiddleware;
 use Ebanx\Http\Middleware\SecurityHeadersMiddleware;
+use Ebanx\Infrastructure\IdempotencyStore;
 use Ebanx\Infrastructure\InMemoryAccountRepository;
+use Ebanx\Infrastructure\TransactionLog;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Slim\Factory\AppFactory;
@@ -19,16 +22,21 @@ use Slim\Psr7\Factory\ServerRequestFactory;
 final class ApiTest extends TestCase
 {
     private \Slim\App $app;
+    private TransactionLog $transactionLog;
+    private IdempotencyStore $idempotencyStore;
 
     protected function setUp(): void
     {
         $repository = new InMemoryAccountRepository();
-        $service = new AccountService($repository);
-        $controller = new AccountController($service);
+        $this->transactionLog = new TransactionLog(tempnam(sys_get_temp_dir(), 'ebanx_test_log_'));
+        $this->idempotencyStore = new IdempotencyStore(tempnam(sys_get_temp_dir(), 'ebanx_test_idem_'));
+        $service = new AccountService($repository, $this->transactionLog);
+        $controller = new AccountController($service, $this->idempotencyStore);
 
         $this->app = AppFactory::create();
         $this->app->addBodyParsingMiddleware();
         $this->app->add(new InputValidationMiddleware());
+        $this->app->add(new IdempotencyMiddleware($this->idempotencyStore));
         $this->app->add(new ErrorHandlerMiddleware());
         $this->app->add(new CorsMiddleware());
         $this->app->add(new SecurityHeadersMiddleware());
@@ -36,6 +44,13 @@ final class ApiTest extends TestCase
         $this->app->post('/reset', [$controller, 'reset']);
         $this->app->get('/balance', [$controller, 'balance']);
         $this->app->post('/event', [$controller, 'event']);
+        $this->app->get('/health', [$controller, 'health']);
+    }
+
+    protected function tearDown(): void
+    {
+        @unlink($this->transactionLog->getFilePath());
+        // IdempotencyStore cleanup handled by tempnam lifecycle
     }
 
     #[Test]
@@ -437,6 +452,150 @@ final class ApiTest extends TestCase
         $response = $this->app->handle($request);
 
         $this->assertSame(400, $response->getStatusCode());
+    }
+
+    // --- Health check ---
+
+    #[Test]
+    public function health_returns_200_with_status(): void
+    {
+        $request = $this->createGetRequest('/health');
+        $response = $this->app->handle($request);
+
+        $this->assertSame(200, $response->getStatusCode());
+
+        $body = json_decode((string) $response->getBody(), true);
+        $this->assertSame('healthy', $body['status']);
+        $this->assertArrayHasKey('timestamp', $body);
+        $this->assertArrayHasKey('php_version', $body);
+    }
+
+    // --- Idempotency ---
+
+    #[Test]
+    public function idempotency_key_replays_same_response(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+
+        // First request with idempotency key
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10,
+        ])->withHeader('Idempotency-Key', 'unique-key-123');
+        $response1 = $this->app->handle($request);
+
+        $this->assertSame(201, $response1->getStatusCode());
+        $body1 = (string) $response1->getBody();
+
+        // Second request with SAME key — should replay, not re-execute
+        $request2 = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10,
+        ])->withHeader('Idempotency-Key', 'unique-key-123');
+        $response2 = $this->app->handle($request2);
+
+        $body2 = (string) $response2->getBody();
+
+        // Same response replayed
+        $this->assertSame($body1, $body2);
+        $this->assertSame('true', $response2->getHeaderLine('X-Idempotency-Replayed'));
+    }
+
+    #[Test]
+    public function idempotency_key_prevents_duplicate_deposit(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+
+        // Deposit 10 twice with same key
+        $request = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10,
+        ])->withHeader('Idempotency-Key', 'dup-key');
+        $this->app->handle($request);
+        $this->app->handle($request);
+
+        // Balance should be 10 (not 20) — second was replayed, not executed
+        $response = $this->app->handle(
+            $this->createGetRequest('/balance', ['account_id' => '100'])
+        );
+        $this->assertSame('10', (string) $response->getBody());
+    }
+
+    #[Test]
+    public function different_idempotency_keys_execute_independently(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+
+        $request1 = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10,
+        ])->withHeader('Idempotency-Key', 'key-A');
+        $this->app->handle($request1);
+
+        $request2 = $this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 10,
+        ])->withHeader('Idempotency-Key', 'key-B');
+        $this->app->handle($request2);
+
+        $response = $this->app->handle(
+            $this->createGetRequest('/balance', ['account_id' => '100'])
+        );
+        $this->assertSame('20', (string) $response->getBody());
+    }
+
+    // --- Transaction log ---
+
+    #[Test]
+    public function transaction_log_records_operations(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 50,
+        ]));
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'withdraw', 'origin' => '100', 'amount' => 10,
+        ]));
+
+        $logs = $this->transactionLog->getAll();
+
+        // reset + deposit + withdraw = 3 entries
+        $this->assertCount(3, $logs);
+
+        $this->assertSame('reset', $logs[0]['type']);
+
+        $this->assertSame('deposit', $logs[1]['type']);
+        $this->assertSame('100', $logs[1]['destination']);
+        $this->assertSame(50, $logs[1]['amount']);
+        $this->assertSame(0, $logs[1]['balance_before']);
+        $this->assertSame(50, $logs[1]['balance_after']);
+
+        $this->assertSame('withdraw', $logs[2]['type']);
+        $this->assertSame('100', $logs[2]['origin']);
+        $this->assertSame(10, $logs[2]['amount']);
+        $this->assertSame(50, $logs[2]['balance_before']);
+        $this->assertSame(40, $logs[2]['balance_after']);
+    }
+
+    #[Test]
+    public function transaction_log_records_transfer_both_sides(): void
+    {
+        $this->app->handle($this->createPostRequest('/reset'));
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'deposit', 'destination' => '100', 'amount' => 100,
+        ]));
+
+        $this->app->handle($this->createJsonPostRequest('/event', [
+            'type' => 'transfer', 'origin' => '100', 'destination' => '200', 'amount' => 30,
+        ]));
+
+        $logs = $this->transactionLog->getAll();
+        $transferLog = end($logs);
+
+        $this->assertSame('transfer', $transferLog['type']);
+        $this->assertSame('100', $transferLog['origin']);
+        $this->assertSame('200', $transferLog['destination']);
+        $this->assertSame(30, $transferLog['amount']);
+        $this->assertSame(100, $transferLog['origin_balance_before']);
+        $this->assertSame(70, $transferLog['origin_balance_after']);
+        $this->assertSame(0, $transferLog['destination_balance_before']);
+        $this->assertSame(30, $transferLog['destination_balance_after']);
     }
 
     private function createGetRequest(string $uri, array $queryParams = []): \Psr\Http\Message\ServerRequestInterface

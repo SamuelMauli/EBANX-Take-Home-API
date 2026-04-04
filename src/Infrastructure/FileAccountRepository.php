@@ -11,19 +11,23 @@ use Ebanx\Domain\AccountRepositoryInterface;
  * File-based repository for PHP's stateless request model.
  * Stores accounts as JSON in a temp file — persists between requests,
  * lost on server restart (which matches "durability is NOT a requirement").
+ *
+ * Uses flock() for full read-modify-write atomicity under concurrent PHP-FPM workers.
  */
 final class FileAccountRepository implements AccountRepositoryInterface
 {
     private string $filePath;
+    private string $lockPath;
 
     public function __construct(?string $filePath = null)
     {
         $this->filePath = $filePath ?? sys_get_temp_dir() . '/ebanx_accounts.json';
+        $this->lockPath = $this->filePath . '.lock';
     }
 
     public function find(string $id): ?Account
     {
-        $accounts = $this->loadAll();
+        $accounts = $this->withLock(fn () => $this->loadAll());
 
         if (!isset($accounts[$id])) {
             return null;
@@ -34,14 +38,56 @@ final class FileAccountRepository implements AccountRepositoryInterface
 
     public function save(Account $account): void
     {
-        $accounts = $this->loadAll();
-        $accounts[$account->getId()] = $account->getBalance();
-        $this->persist($accounts);
+        $this->withLock(function () use ($account): void {
+            $accounts = $this->loadAll();
+            $accounts[$account->getId()] = $account->getBalance();
+            $this->writeFile($accounts);
+        });
     }
 
     public function clear(): void
     {
-        $this->persist([]);
+        $this->withLock(fn () => $this->writeFile([]));
+    }
+
+    public function atomic(callable $callback): mixed
+    {
+        return $this->withLock($callback);
+    }
+
+    /**
+     * Execute a callback under an exclusive file lock.
+     * Guarantees read-modify-write atomicity across PHP-FPM workers.
+     *
+     * @template T
+     * @param callable(): T $callback
+     * @return T
+     */
+    private function withLock(callable $callback): mixed
+    {
+        $dir = dirname($this->lockPath);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        $lockHandle = fopen($this->lockPath, 'c');
+        if ($lockHandle === false) {
+            throw new \RuntimeException('Cannot open lock file: ' . $this->lockPath);
+        }
+
+        try {
+            if (!flock($lockHandle, LOCK_EX)) {
+                throw new \RuntimeException('Cannot acquire lock: ' . $this->lockPath);
+            }
+
+            $result = $callback();
+
+            flock($lockHandle, LOCK_UN);
+
+            return $result;
+        } finally {
+            fclose($lockHandle);
+        }
     }
 
     /**
@@ -67,7 +113,7 @@ final class FileAccountRepository implements AccountRepositoryInterface
     /**
      * @param array<string, int> $accounts
      */
-    private function persist(array $accounts): void
+    private function writeFile(array $accounts): void
     {
         $dir = dirname($this->filePath);
 

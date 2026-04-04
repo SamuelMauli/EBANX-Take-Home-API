@@ -26,4 +26,10 @@ final class InMemoryAccountRepository implements AccountRepositoryInterface
     {
         $this->accounts = [];
     }
+
+    public function atomic(callable $callback): mixed
+    {
+        // In-memory is single-process — no concurrency, just execute
+        return $callback();
+    }
 }
